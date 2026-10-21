@@ -27,7 +27,14 @@ Plain PHP 8.0+ with the `curl` and `sodium` extensions. No dependencies.
 
 Tokens never appear in a URL or pass through the browser; only the one-time code does, and it's useless without the verifier.
 
-## Deploy
+## Deploy with Coolify
+
+1. New resource → public Git repository, branch `main`, **Build Pack: Dockerfile** (the `Dockerfile` here: PHP 8.3 with Apache, web root `public/`, `store/` inside the container).
+2. Ports Exposes `80`; domain `https://connect.exactwp.com` (Coolify's proxy handles HTTPS).
+3. Environment variables, as **runtime** variables (not build variables): `FB_APP_ID`, `FB_APP_SECRET`, `FB_CONFIG_ID`, `RELAY_URL` (`https://connect.exactwp.com`), `RELAY_KEY`. Lock `FB_APP_SECRET` and `RELAY_KEY` so they're hidden in the UI.
+4. Health check path `/` (answers `ok`). Keep one replica: records sit on the container's disk.
+
+## Deploy on a plain server
 
 1. Upload the folder to the server and point the web root of the relay's host (e.g. `connect.exactwp.com`, HTTPS only) at `public/`. Everything else stays outside the web root.
 2. Create `store/` beside `public/`, writable by PHP and nothing else (`chmod 700`).
