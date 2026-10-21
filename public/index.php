@@ -5,6 +5,7 @@
  * GET  /{network}/start?return=…&challenge=…&set=…  confirm, then the network's dialog
  * GET  /{network}/callback                          the network comes back here
  * POST /collect  code, verifier                     the site fetches its tokens, once
+ * GET  /privacy, /terms, /data-deletion             the Meta app's policy pages
  *
  * Networks: facebook (sets pages, instagram, inbox), instagram and threads
  * (sets publish, inbox), each when its settings are present.
@@ -28,6 +29,26 @@ require dirname( __DIR__ ) . '/src/Threads.php';
 
 const COOKIE = 'exs_relay';
 
+// The app's mark and name at the top of every page.
+const BRAND_CSS = '.brand{display:flex;align-items:center;gap:.5rem;margin-bottom:1.25rem;font-weight:600}.brand svg{width:2rem;height:2rem;border-radius:8px}';
+
+// The Meta app's policy pages (`src/pages/`), by path.
+const DOCUMENTS = [
+	'/privacy'       => 'Privacy policy',
+	'/terms'         => 'Terms of service',
+	'/data-deletion' => 'Deleting your data',
+];
+
+$method = $_SERVER['REQUEST_METHOD'];
+$path   = (string) parse_url( $_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH );
+
+// Served before the settings are read, so Meta can reach them even if the
+// connect settings are broken.
+if ( 'GET' === $method && isset( DOCUMENTS[ $path ] ) ) {
+	document( $path );
+	exit;
+}
+
 $config   = config();
 $networks = networks( $config );
 $store    = new Store( $config['RELAY_STORE'], $config['RELAY_KEY'] );
@@ -36,9 +57,6 @@ $store->sweep();
 header( 'Cache-Control: no-store' );
 header( 'Referrer-Policy: no-referrer' );
 header( 'X-Content-Type-Options: nosniff' );
-
-$method = $_SERVER['REQUEST_METHOD'];
-$path   = (string) parse_url( $_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH );
 
 if ( 'POST' === $method && '/collect' === $path ) {
 	collect( $store );
@@ -99,7 +117,7 @@ function start( Store $store, Network $network, string $slug ): void {
 	page(
 		200,
 		'Connect ' . $network->label(),
-		'You’re connecting ' . esc( $network->label() ) . ' to <strong>' . esc( $host ) . '</strong>. Continue only if you started this from that WordPress site.',
+		'Exact Social is redirecting you to ' . esc( $network->name() ) . ' to connect ' . esc( $network->label() ) . ' to <strong>' . esc( $host ) . '</strong>. Continue only if you started this from that WordPress site.',
 		[
 			'Continue to ' . $network->name() => $network->login_url( $state, $set ),
 			'Cancel'                          => with_query( $return, [ 'relay_error' => 'cancelled' ] ),
@@ -264,5 +282,42 @@ function page( int $status, string $title, string $html, array $buttons = [] ): 
 		. 'main{max-width:28rem;margin:12vh auto;padding:2rem;background:#fff;border:1px solid #e4e4e7;border-radius:12px}'
 		. 'h1{font-size:1.25rem;margin:0 0 .5rem}a{display:inline-block;margin:1rem .5rem 0 0;padding:.5rem 1rem;border-radius:8px;border:1px solid #d4d4d8;color:inherit;text-decoration:none}'
 		. 'a:first-of-type{background:#1877f2;border-color:#1877f2;color:#fff}'
-		. '</style></head><body><main><h1>' . esc( $title ) . '</h1><p>' . $html . '</p>' . $links . '</main></body></html>';
+		. BRAND_CSS . '</style></head><body><main>' . brand() . '<h1>' . esc( $title ) . '</h1><p>' . $html . '</p>' . $links . '</main></body></html>';
+}
+
+/**
+ * One of the policy pages, with links to the others.
+ *
+ * @param string $path Its path in `DOCUMENTS`.
+ */
+function document( string $path ): void {
+	header( 'Content-Type: text/html; charset=utf-8' );
+	header( 'X-Content-Type-Options: nosniff' );
+	header( 'X-Frame-Options: DENY' );
+	header( "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'" );
+
+	$links = '';
+	foreach ( DOCUMENTS as $other => $title ) {
+		$links .= $other === $path ? '' : '<a href="' . esc( $other ) . '">' . esc( $title ) . '</a>';
+	}
+
+	echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+		. '<title>' . esc( DOCUMENTS[ $path ] ) . ' · Exact Social</title><style>'
+		. 'body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#18181b;background:#fafafa}'
+		. 'main{max-width:42rem;margin:6vh auto;padding:2rem;background:#fff;border:1px solid #e4e4e7;border-radius:12px}'
+		. 'h1{font-size:1.5rem;margin:0 0 .25rem}h2{font-size:1.05rem;margin:1.75rem 0 .25rem}.updated{color:#71717a;margin-top:0}'
+		. 'a{color:#1877f2}code{font-size:.9em}nav{margin-top:2rem;padding-top:1rem;border-top:1px solid #e4e4e7}nav a{margin-right:1rem}'
+		. BRAND_CSS . '</style></head><body><main>' . brand() . '<h1>' . esc( DOCUMENTS[ $path ] ) . '</h1>'
+		. (string) file_get_contents( dirname( __DIR__ ) . '/src/pages' . $path . '.html' )
+		. '<nav>' . $links . '</nav></main></body></html>';
+}
+
+/**
+ * The Exact Social mark (`docs/brand/exact-social-mark.svg` in the plugin) and name.
+ */
+function brand(): string {
+	return '<div class="brand"><svg viewBox="0 0 1024 1024" aria-hidden="true"><rect width="1024" height="1024" fill="#5e6ad2"/><g fill="#fff">'
+		. '<path d="M225 292H461V384H317V466H435V558H317V640H461V732H225Z"/>'
+		. '<path d="M753 292H666A133 133 0 0 0 666 558A41 41 0 0 1 666 640H579V732H666A133 133 0 0 0 666 466A41 41 0 0 1 666 384H753Z"/>'
+		. '</g></svg>Exact Social</div>';
 }

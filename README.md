@@ -60,7 +60,13 @@ Instagram and Threads:
 
 Tokens never appear in a URL or pass through the browser; only the one-time code does, and it's useless without the verifier.
 
+## Policy pages
+
+`/privacy`, `/terms` and `/data-deletion` are the Meta app's Privacy Policy, Terms of Service and User data deletion (instructions) URLs. Their text is in `src/pages/`; they're served before the settings are read, so they stay up even if a setting is missing.
+
 ## Meta app
+
+App settings → Basic: Privacy Policy URL `<RELAY_URL>/privacy`, Terms of Service URL `<RELAY_URL>/terms`, User data deletion → Data deletion instructions URL `<RELAY_URL>/data-deletion`.
 
 Register each callback as a redirect URI (Strict Mode on):
 
