@@ -2,9 +2,12 @@
 /**
  * Exact Social connect relay. Point the web root at this folder.
  *
- * GET  /facebook/start?return=…&challenge=…  confirm, then Facebook's dialog
- * GET  /facebook/callback                     Facebook comes back here
- * POST /collect  code, verifier               the site fetches its tokens, once
+ * GET  /{network}/start?return=…&challenge=…&set=…  confirm, then the network's dialog
+ * GET  /{network}/callback                          the network comes back here
+ * POST /collect  code, verifier                     the site fetches its tokens, once
+ *
+ * Networks: facebook (sets pages, instagram, inbox), instagram and threads
+ * (sets publish, inbox), each when its settings are present.
  *
  * @package ExactSocial\Relay
  */
@@ -17,57 +20,64 @@ use Throwable;
 
 require dirname( __DIR__ ) . '/src/functions.php';
 require dirname( __DIR__ ) . '/src/Store.php';
+require dirname( __DIR__ ) . '/src/Http.php';
+require dirname( __DIR__ ) . '/src/Network.php';
 require dirname( __DIR__ ) . '/src/Facebook.php';
+require dirname( __DIR__ ) . '/src/Instagram.php';
+require dirname( __DIR__ ) . '/src/Threads.php';
 
 const COOKIE = 'exs_relay';
 
-$config = config();
-$store  = new Store( $config['RELAY_STORE'], $config['RELAY_KEY'] );
+$config   = config();
+$networks = networks( $config );
+$store    = new Store( $config['RELAY_STORE'], $config['RELAY_KEY'] );
 $store->sweep();
-
-$facebook = new Facebook(
-	$config['FB_APP_ID'],
-	$config['FB_APP_SECRET'],
-	$config['FB_CONFIG_ID'],
-	rtrim( $config['RELAY_URL'], '/' ) . '/facebook/callback'
-);
 
 header( 'Cache-Control: no-store' );
 header( 'Referrer-Policy: no-referrer' );
 header( 'X-Content-Type-Options: nosniff' );
 
-$route = $_SERVER['REQUEST_METHOD'] . ' ' . parse_url( $_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH );
+$method = $_SERVER['REQUEST_METHOD'];
+$path   = (string) parse_url( $_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH );
 
-match ( $route ) {
-	'GET /facebook/start'    => start( $store, $facebook ),
-	'GET /facebook/callback' => callback( $store, $facebook ),
-	'POST /collect'          => collect( $store ),
-	'GET /'                  => print 'ok',
-	default                  => page( 404, 'Not found', 'There is nothing here.' ),
-};
+if ( 'POST' === $method && '/collect' === $path ) {
+	collect( $store );
+} elseif ( 'GET' === $method && '/' === $path ) {
+	print 'ok';
+} elseif ( 'GET' === $method && preg_match( '#^/([a-z]+)/(start|callback)$#', $path, $route ) && isset( $networks[ $route[1] ] ) ) {
+	'start' === $route[2]
+		? start( $store, $networks[ $route[1] ], $route[1] )
+		: callback( $store, $networks[ $route[1] ], $route[1] );
+} else {
+	page( 404, 'Not found', 'There is nothing here.' );
+}
 
 /**
- * Show where the Pages will go, then send the person to Facebook.
+ * Show where the account will go, then send the person to the network.
  *
- * @param Store    $store    Store.
- * @param Facebook $facebook Facebook.
+ * @param Store   $store   Store.
+ * @param Network $network Network.
+ * @param string  $slug    Its route name.
  */
-function start( Store $store, Facebook $facebook ): void {
+function start( Store $store, Network $network, string $slug ): void {
 	$return    = (string) ( $_GET['return'] ?? '' );
 	$challenge = (string) ( $_GET['challenge'] ?? '' );
-	if ( ! is_return_url( $return ) || ! is_challenge( $challenge ) ) {
+	$set       = (string) ( $_GET['set'] ?? $network->sets()[0] );
+	if ( ! is_return_url( $return ) || ! is_challenge( $challenge ) || ! in_array( $set, $network->sets(), true ) ) {
 		page( 400, 'Can’t connect', 'Start again from your WordPress site.' );
 		return;
 	}
 
 	// The callback must come back to the browser that saw this page, so a
-	// Facebook link made by someone else can't send Pages to their site.
+	// login link made by someone else can't send the account to their site.
 	$browser = token();
 	$state   = token();
 	$store->put(
 		$state,
 		[
 			'kind'      => 'state',
+			'network'   => $slug,
+			'set'       => $set,
 			'return'    => $return,
 			'challenge' => $challenge,
 			'browser'   => hash( 'sha256', $browser ),
@@ -88,28 +98,29 @@ function start( Store $store, Facebook $facebook ): void {
 	$host = (string) parse_url( $return, PHP_URL_HOST );
 	page(
 		200,
-		'Connect Facebook Pages',
-		'You’re connecting Facebook Pages to <strong>' . esc( $host ) . '</strong>. Continue only if you started this from that WordPress site.',
+		'Connect ' . $network->label(),
+		'You’re connecting ' . esc( $network->label() ) . ' to <strong>' . esc( $host ) . '</strong>. Continue only if you started this from that WordPress site.',
 		[
-			'Continue to Facebook' => $facebook->login_url( $state ),
-			'Cancel'               => with_query( $return, [ 'relay_error' => 'cancelled' ] ),
+			'Continue to ' . $network->name() => $network->login_url( $state, $set ),
+			'Cancel'                          => with_query( $return, [ 'relay_error' => 'cancelled' ] ),
 		]
 	);
 }
 
 /**
- * Turn Facebook's code into tokens, keep them for the site, and send the
+ * Turn the network's code into tokens, keep them for the site, and send the
  * person back with a one-time code.
  *
- * @param Store    $store    Store.
- * @param Facebook $facebook Facebook.
+ * @param Store   $store   Store.
+ * @param Network $network Network.
+ * @param string  $slug    Its route name.
  */
-function callback( Store $store, Facebook $facebook ): void {
+function callback( Store $store, Network $network, string $slug ): void {
 	$record  = $store->take( (string) ( $_GET['state'] ?? '' ) );
 	$browser = (string) ( $_COOKIE[ COOKIE ] ?? '' );
 	setcookie( COOKIE, '', [ 'expires' => 1, 'path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Lax' ] );
 
-	if ( 'state' !== ( $record['kind'] ?? '' ) || ! hash_equals( $record['browser'], hash( 'sha256', $browser ) ) ) {
+	if ( 'state' !== ( $record['kind'] ?? '' ) || $slug !== $record['network'] || ! hash_equals( $record['browser'], hash( 'sha256', $browser ) ) ) {
 		page( 400, 'This link has expired', 'Start again from your WordPress site.' );
 		return;
 	}
@@ -121,7 +132,7 @@ function callback( Store $store, Facebook $facebook ): void {
 	}
 
 	try {
-		$payload = $facebook->connect( (string) ( $_GET['code'] ?? '' ) );
+		$payload = $network->connect( (string) ( $_GET['code'] ?? '' ), $record['set'] );
 	} catch ( Throwable $e ) {
 		error_log( 'exact-social-relay: ' . $e->getMessage() );
 		redirect( with_query( $record['return'], [ 'relay_error' => 'failed' ] ) );
@@ -160,21 +171,58 @@ function collect( Store $store ): void {
 }
 
 /**
+ * The networks whose settings are present. Facebook's Pages set is required;
+ * its other sets, Instagram and Threads switch on with their settings.
+ *
+ * @param array $config Settings.
+ *
+ * @return array<string, Network> By route name.
+ */
+function networks( array $config ): array {
+	$base     = rtrim( $config['RELAY_URL'], '/' );
+	$networks = [
+		'facebook' => new Facebook(
+			$config['FB_APP_ID'],
+			$config['FB_APP_SECRET'],
+			array_filter(
+				[
+					'pages'     => $config['FB_CONFIG_ID'],
+					'instagram' => $config['FB_CONFIG_ID_INSTAGRAM'],
+					'inbox'     => $config['FB_CONFIG_ID_INBOX'],
+				]
+			),
+			"$base/facebook/callback"
+		),
+	];
+	if ( $config['INSTAGRAM_APP_ID'] && $config['INSTAGRAM_APP_SECRET'] ) {
+		$networks['instagram'] = new Instagram( $config['INSTAGRAM_APP_ID'], $config['INSTAGRAM_APP_SECRET'], "$base/instagram/callback" );
+	}
+	if ( $config['THREADS_APP_ID'] && $config['THREADS_APP_SECRET'] ) {
+		$networks['threads'] = new Threads( $config['THREADS_APP_ID'], $config['THREADS_APP_SECRET'], "$base/threads/callback" );
+	}
+
+	return $networks;
+}
+
+/**
  * Settings from the environment, or `config.php` beside `public/`.
  */
 function config(): array {
-	$file   = dirname( __DIR__ ) . '/config.php';
-	$values = is_readable( $file ) ? require $file : [];
+	$required = [ 'FB_APP_ID', 'FB_APP_SECRET', 'FB_CONFIG_ID', 'RELAY_URL', 'RELAY_KEY' ];
+	$optional = [ 'FB_CONFIG_ID_INSTAGRAM', 'FB_CONFIG_ID_INBOX', 'INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET', 'THREADS_APP_ID', 'THREADS_APP_SECRET', 'RELAY_STORE' ];
+	$file     = dirname( __DIR__ ) . '/config.php';
+	$values   = is_readable( $file ) ? require $file : [];
 
 	$config = [];
-	foreach ( [ 'FB_APP_ID', 'FB_APP_SECRET', 'FB_CONFIG_ID', 'RELAY_URL', 'RELAY_KEY', 'RELAY_STORE' ] as $name ) {
+	foreach ( array_merge( $required, $optional ) as $name ) {
 		$config[ $name ] = (string) ( $values[ $name ] ?? getenv( $name ) ?: '' );
 	}
 	$config['RELAY_STORE'] = $config['RELAY_STORE'] ?: dirname( __DIR__ ) . '/store';
 	$config['RELAY_KEY']   = (string) base64_decode( $config['RELAY_KEY'], true );
 
-	if ( in_array( '', $config, true ) || SODIUM_CRYPTO_SECRETBOX_KEYBYTES !== strlen( $config['RELAY_KEY'] ) || ! is_writable( $config['RELAY_STORE'] ) ) {
-		error_log( 'exact-social-relay: missing settings, a RELAY_KEY that isn’t 32 base64 bytes, or a store that isn’t writable.' );
+	$missing = array_filter( $required, static fn( string $name ): bool => '' === $config[ $name ] );
+	if ( $missing || SODIUM_CRYPTO_SECRETBOX_KEYBYTES !== strlen( $config['RELAY_KEY'] ) || ! is_writable( $config['RELAY_STORE'] ) ) {
+		error_log( 'exact-social-relay: missing ' . ( implode( ', ', $missing ) ?: 'nothing' ) . '; RELAY_KEY must be 32 base64 bytes and the store writable.' );
 		page( 500, 'Not available', 'The connect service isn’t set up.' );
 		exit;
 	}

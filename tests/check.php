@@ -11,6 +11,11 @@ namespace ExactSocial\Relay;
 
 require dirname( __DIR__ ) . '/src/functions.php';
 require dirname( __DIR__ ) . '/src/Store.php';
+require dirname( __DIR__ ) . '/src/Http.php';
+require dirname( __DIR__ ) . '/src/Network.php';
+require dirname( __DIR__ ) . '/src/Facebook.php';
+require dirname( __DIR__ ) . '/src/Instagram.php';
+require dirname( __DIR__ ) . '/src/Threads.php';
 
 /**
  * Fail loudly.
@@ -69,4 +74,33 @@ $store->sweep();
 check( [] === glob( "$dir/*" ), 'sweep removes expired records' );
 
 rmdir( $dir );
+
+/**
+ * A login URL's query.
+ *
+ * @param string $url URL.
+ */
+function query_of( string $url ): array {
+	parse_str( (string) parse_url( $url, PHP_URL_QUERY ), $query );
+	return $query;
+}
+
+// What each network's login asks for.
+$facebook = new Facebook( 'app', 'secret', [ 'pages' => 'C1', 'instagram' => 'C2', 'inbox' => 'C3' ], 'https://r.test/facebook/callback' );
+check( [ 'pages', 'instagram', 'inbox' ] === $facebook->sets(), 'Facebook sets, pages first' );
+check( 'C1' === query_of( $facebook->login_url( 's', 'pages' ) )['config_id'], 'Facebook pages uses its configuration' );
+check( 'C3' === query_of( $facebook->login_url( 's', 'inbox' ) )['config_id'], 'Facebook inbox uses its configuration' );
+check( 's' === query_of( $facebook->login_url( 's', 'pages' ) )['state'], 'Facebook login carries the state' );
+check( [ 'pages' ] === ( new Facebook( 'app', 'secret', array_filter( [ 'pages' => 'C1', 'instagram' => '', 'inbox' => '' ] ), 'x' ) )->sets(), 'unset configurations are no sets' );
+
+$instagram = query_of( ( new Instagram( 'ig', 'secret', 'https://r.test/instagram/callback' ) )->login_url( 's', 'publish' ) );
+check( 'https://r.test/instagram/callback' === $instagram['redirect_uri'], 'Instagram redirect URI' );
+check( str_contains( $instagram['scope'], 'instagram_business_content_publish' ) && ! str_contains( $instagram['scope'], 'manage_messages' ), 'Instagram publish asks for no messages' );
+check( str_contains( query_of( ( new Instagram( 'ig', 'secret', 'x' ) )->login_url( 's', 'inbox' ) )['scope'], 'instagram_business_manage_messages' ), 'Instagram inbox asks for messages' );
+
+$threads = query_of( ( new Threads( 'th', 'secret', 'https://r.test/threads/callback' ) )->login_url( 's', 'publish' ) );
+check( str_contains( $threads['scope'], 'threads_content_publish' ) && ! str_contains( $threads['scope'], 'threads_read_replies' ), 'Threads publish asks for no replies' );
+check( str_contains( query_of( ( new Threads( 'th', 'secret', 'x' ) )->login_url( 's', 'inbox' ) )['scope'], 'threads_manage_mentions' ), 'Threads inbox asks for mentions' );
+check( ! str_contains( $facebook->login_url( 's', 'pages' ), 'secret' ), 'no secret in a login URL' );
+
 echo "all checks passed\n";
