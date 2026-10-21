@@ -91,3 +91,16 @@ php tests/check.php
 ```
 
 Covers the verifier check, return-address rules, the store (encrypted on disk, read once, expiry, sweep), and what each network's login asks for (configuration per Facebook set, permissions per Instagram and Threads set, no secret in a login URL).
+
+## Try a deployed relay
+
+```bash
+php tests/try.php https://connect.exactwp.com facebook pages
+php tests/try.php https://connect.exactwp.com facebook instagram
+php tests/try.php https://connect.exactwp.com instagram publish
+php tests/try.php https://connect.exactwp.com threads publish
+```
+
+The script plays the WordPress site: it starts a connect with a fresh verifier, opens the link (on a Mac), waits for the browser on `http://127.0.0.1:8899`, collects the tokens, makes one read-only call with them (a Page's name, or the account's username), and checks that a second `/collect` with the same code is refused. Tokens are masked in its output.
+
+While the Meta app is in Development mode only people with a role can log in: the app's admins and developers for Facebook, and accepted Instagram or Threads testers (App roles) for those logins. `facebook instagram` needs a Page with a linked Instagram professional account.
